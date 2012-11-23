@@ -1,5 +1,25 @@
-.eunit
-deps
-*.o
+# A couple directories that should only be local copies #
+#########################################################
+.git/
+.eunit/
+ebin
+doc
+rel
+
+# Eclipse and Erlide packages #
+###############################
+.settings/
+.project
+
+# Compiled source #
+###################
 *.beam
-*.plt
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+*.app
+
+
