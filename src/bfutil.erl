@@ -18,7 +18,7 @@
 -module(bfutil).
 -export([ceil/1,mask/3,maskloop/2,bits/1,mod/2]).
 
-%% Simple ceiling function for fastmake function.
+%% Simple ceiling function for `create' function.
 ceil(X) ->
     T = erlang:trunc(X),
     case (X - T) of

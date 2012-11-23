@@ -22,7 +22,7 @@
 -export([start/5,stop/1,add/2,test/2]).
 
 % Private exports
--export([start_master/2, master/1, handler/1]).
+-export([start_master/1, tester/3, handler/1]).
 
 
 % The partial bloom filter, it contains a list of separate bytes of the vector.
@@ -32,6 +32,7 @@
 -record(serv_state, {
 	b=0,	  % The Size of the bit vector (number of bits)
 	k=0,      % The number of hash functions used
+	t=0,      % Number of tester threads.
 	h1=null,  % Hash functions
 	h2=null,  
 	tpids=[], %Tester Pid()
@@ -53,8 +54,8 @@
 -spec start(integer(), integer(), integer(), fun(), fun()) -> {ok, [pid()]} |
 															  {error, any()}.
 start(M, K, N, H1, H2) ->
-	State = #serv_state{b=M,k=K,h1=H1,h2=H2},
-	MasterPid = spawn(bf_server,start_master,[State, N]),
+	State = #serv_state{b=M,k=K,t=N,h1=H1,h2=H2},
+	MasterPid = spawn(bf_server,start_master,[State]),
 	{ok, #pbf{master=MasterPid} }.
 
 %% --------------------------------------------------------------------
@@ -107,19 +108,22 @@ test(Elem, PBF) ->
 	
 
 %% ====================================================================
-%% Internal functions
+%% Private functions
 %% ====================================================================
 
-start_master(#serv_state{b=B,k=K,h1=H1,h2=H2}=State, T) ->
+%% Starts the master server after starting the hashing and testing threads.
+start_master(#serv_state{b=B,k=K,t=T,h1=H1,h2=H2}=State) ->
 	BV = splitbv(T,lists:zip( lists:seq(0, B-1), lists:duplicate(B,<<0:1>>) )),
 	TesterPids = lists:foldl(fun(BVList, PidList) ->
-								[spawn(bf_server, handler, [#partialBF{b=BVList}])|PidList]
+			[spawn(bf_server, handler, [#partialBF{b=BVList}])|PidList]
 							 end, [], BV),
 	HasherPids = lists:foldl(fun(_,PidList)->
-								[spawn(bf_server, hasher, [State])|PidList]
+			[spawn(bf_server, hasher, [State])|PidList]
 							 end,[], lists:seq(0, T)),
 	master(State#serv_state{tpids=TesterPids,hpids=HasherPids}).
 
+%% The master thread which will spam testers/hashers when an addition, query
+%% or shutdown message comes in.
 master(#serv_state{tpids=TesterPids,hpids=HasherPids} = State) ->
 	receive
 		shutdown -> 
@@ -133,17 +137,24 @@ master(#serv_state{tpids=TesterPids,hpids=HasherPids} = State) ->
 			flash(HasherPids, {test, Elem, Tester})
 	end.
 
+%% Spawned from the master, it collates the results from the tester threads.
+tester(#serv_state{t=T},Ret,T) -> 
+	Ret ! true;
 tester(State, Ret, Acc) ->
 	receive 
-		{ret, }
+		{ret, true} -> tester(State, Ret, Acc+1);
+		{ret, false} -> Ret ! false;
+		_ -> tester(State,Ret,Acc)
+	end.
 	
 hasher(Elem, N, H1, H2, Start, End, Pids) ->
+	%TODO: finish updating hasher.
 	lists:foreach(fun(I) ->
 		H = bfutil:mod( (H1(Elem) + I*H2(Elem) + I*I), N ),
 		flash(Pids, {test,H/8,bfutils:mod(H,8)})
 	end, lists:seq(Start, End)).	
 
-%% Parallel thread function that handles checking a subsection of the bitvector.
+%% Thread function that handles checking a sub-section of the bit-vector.
 handler(#partialBF{b=B} = State) ->
 	receive
 		shutdown -> ok;
@@ -159,22 +170,31 @@ handler(#partialBF{b=B} = State) ->
 		_ -> handler(State)
 	end.
 
-%%% Internal functions
+%% ====================================================================
+%% Internal functions
+%% ====================================================================
+
+%% Performs linear search of bitvector chunks to see if block/bit are 1.
 check([{Block,Bits}|_], Block, Bit) ->
 	(Bits bor Bit) == Bits;
 check([{_,_}|R], Block, Bit) -> 
 	check(R, Block, Bit);
 check([], Block, Bit) -> none.
 
+%% Performs linear search of bitvector for block/bit and masks it to a 1.
 update([{Block,Bits}|R], Block, Bit) ->
 	[ {Block, Bits bor Bit} | R ];
 update([{_,_}=H|R], Block, Bit) ->
 	[ H | update(R,Block,Bit) ];
 update([],_,_) -> [].
 
-flash( [Pid|Rest], Msg ) -> Pid ! Msg;
+%% Flashes a list of process-ids with a given message
+flash( [Pid|Rest], Msg ) -> 
+	try Pid ! Msg catch _:_ -> ok end, 
+	flash(Rest, Msg);
 flash( [], _ ) -> ok.
 
+%% Break up a bit-vector over N number of threads.
 splitbv(N, L) -> splitbv(0,N,L,[]).
 splitbv(A,N,[],P) -> P;
 splitbv(A,N,[H|T],P) ->
@@ -182,5 +202,3 @@ splitbv(A,N,[H|T],P) ->
 		{A,L} -> splitbv( (A+1) rem N, N, T, lists:keyreplace(A, 2, P, [H,L]));
 		false -> splitbv( (A+1) rem N, N, T, [{A,[H]}|P] )
 	end.
-	
-  

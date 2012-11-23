@@ -17,10 +17,11 @@
 %% License along with this library. If not, see <http://www.gnu.org/licenses/>.
 -module(erlbloom).
 -include("bf.hrl").
--export([create/1, create/2, create/3, add/2, test/2]).
+-export([create/1, create/2, create/3, add/2, test/2, stop/1]).
 -export([fasthasha/1, fasthashb/1]).
 
--type bf_opt()  :: {h1, fun()} | {h2, fun()} | {parallel, boolean()}.
+-type bf_opt()  :: {h1, fun()} | {h2, fun()} | 
+				   {threads, integer()}.
 -type bf_opts() :: [ bf_opt() ].
 
 %% --------------------------------------------------------------------
@@ -59,12 +60,13 @@ create( M, K ) -> create(M, K, [{h1, fun erlbloom:fasthasha/1},
 -spec create( integer(), integer(), bf_opts() ) -> {ok, bloomfilter()} | 
 												   {error, any()}.
 create( M, K, Opts ) when is_integer(M) and is_integer(K) and M > K ->
-	{H1, H2, Parallel, N} = parse_opts( Opts ),
-	case Parallel of
-		true  -> bf_server:start(M,K,H1,H2,N);
-		false ->
+	{H1, H2,  N} = parse_opts( Opts ),
+	case N of
+		0 ->
 			B = (bfutil:ceil(M/8)),
-			#bf{m = <<0:B>>, n=M, k = K, h1 = H1, h2 = H2}
+			#bf{m = <<0:B>>, n=M, k = K, h1 = H1, h2 = H2};
+		_  -> 
+			bf_server:start(M,K,H1,H2,N)
 	end.
 	
 %% --------------------------------------------------------------------
@@ -115,6 +117,19 @@ test(PBF, Elem) when is_record(PBF, pbf) ->
 	bf_server:test( Elem, PBF ).
 
 
+%% --------------------------------------------------------------------
+%% Stops the bloom filter server and testing threads.
+%%
+%% Func: stop/1
+%% Params: PBF - The parallel bloom filter.
+%% Returns: ok
+%% --------------------------------------------------------------------
+-spec stop( bloomfilter() ) -> ok.
+stop( PBF ) when is_record(PBF, pbf) -> 
+	bf_server:stop( PBF );
+stop( _ ) -> ok.
+
+
 %% ====================================================================
 %% Built-in Hash functions
 %% ====================================================================
@@ -144,14 +159,12 @@ fasthashb(W) -> erlang:phash2({W,"salt"}).
 %% ====================================================================
 
 parse_opts( Opts ) ->
-	Def = {fun erlbloom:fasthasha/1, fun erlbloom:fasthashb/1, false, 4},
+	Def = {fun erlbloom:fasthasha/1, fun erlbloom:fasthashb/1, 4},
 	lists:foldl(
-	  fun({Type,Opt}, {A,B,C,D}) ->
+	  fun({Type,Opt}, {A,B,C}) ->
 		case Type of
-			h1 -> {Opt,B,C,D};
-			h2 -> {A,Opt,C,D};
-			parallel -> {A,B,Opt,D};
-			threads -> {A,B,C,Opt}
+			h1 -> {Opt,B,C};
+			h2 -> {A,Opt,C};
+			threads -> {A,B,Opt}
 		end
 	  end, Def, Opts).
-
