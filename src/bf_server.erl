@@ -19,26 +19,27 @@
 -include("bf.hrl").
 
 % Public exports
--export([start/5,stop/1,add/2,test/2]).
+-export([start/5, stop/1, add/2, test/2]).
 
 % Private exports
--export([start_master/1, tester/3, handler/1]).
+-export([master/1, tester/3, hasher/5, handler/1]).
 
-
-% The partial bloom filter, it contains a list of separate bytes of the vector.
--record(partialBF, {b=[]}).
+% The partial bloom filter, it contains a list of separate blocks of the vector.
+-record(partialBF, {
+    b = [] :: {integer(), binary()} % {Byte Index, Byte}.
+}).
 
 % The master server state.
 -record(serv_state, {
-    b=0,      % The Size of the bit vector (number of bits)
-    k=0,      % The number of hash functions used
-    t=0,      % Number of tester threads.
-    h1=null,  % Hash functions
-    h2=null,  
-    tpids=[], %Tester Pid()
-    hpids=[]  %Hasher Pids()
+    b=0 :: non_neg_integer(),  % The size of the bit vector (number of bits).
+    k=0 :: non_neg_integer(),  % The number of hash functions used.
+    t=0 :: non_neg_integer(),  % Number of threads for hashing and testing.
+    h1=null :: null | fun(),   % Hash functions
+    h2=null :: null | fun(),  
+    tpids=[] :: [ pid() ],     % Tester Pid()
+    hpids=[] :: [ pid() ],     % Hasher Pids()
+    latest_error=null :: null | {pid(), term()} 
 }).
-
 
 %% --------------------------------------------------------------------
 %% Starts the bloom filter server and testing threads.
@@ -54,8 +55,7 @@
 -spec start(integer(), integer(), integer(), fun(), fun()) -> {ok, [pid()]} |
                                                               {error, any()}.
 start(B, K, T, H1, H2) ->
-    State = #serv_state{b=B,k=K,t=T,h1=H1,h2=H2},
-    MasterPid = spawn(bf_server,start_master,[State]),
+    MasterPid = start_master( #serv_state{b=B,k=K,t=T,h1=H1,h2=H2} ),
     {ok, #pbf{master=MasterPid} }.
 
 %% --------------------------------------------------------------------
@@ -113,61 +113,95 @@ test(Elem, PBF) ->
 
 %% Starts the master server after starting the hashing and testing threads.
 start_master(#serv_state{b=B,k=K,t=T,h1=H1,h2=H2}=State) ->
-    BV = splitbv(T,lists:zip( lists:seq(0, B-1), lists:duplicate(B,<<0:1>>) )),
+    
+    %% If a hasher or tester goes down, master needs to know.
+    process_flag(trap_exit, true),
+    
+    %% Generate handler threads, these will hold onto portions of the bitvector.
     TesterPids = lists:foldl(fun(BVList, PidList) ->
-            [spawn(bf_server, handler, [#partialBF{b=BVList}])|PidList]
-                             end, [], BV),
-    HasherPids = lists:foldl(fun(_,PidList)->
-            [spawn(bf_server, hasher, [State])|PidList]
-                             end,[], lists:seq(0, T)),
-    master(State#serv_state{tpids=TesterPids,hpids=HasherPids}).
+            [spawn_link(bf_server, handler, [#partialBF{b=BVList}])|PidList]
+                             end, [], create_byte_partitions( T, B div 8 )),
+    
+    %% Go ahead and generate hasher threads, these will each run some portion 
+    %% of the hash space. (i.e., if you said K=100, and T=10, then each hasher 
+    %% will run ten separate hashes.)
+    HasherPids = lists:foldl(fun(Hashes,PidList)->
+            [spawn_link(bf_server, hasher, [Hashes,H1,H2,B,TesterPids])|PidList]
+                             end,[], create_hash_partitions(T, K)),
+                                               
+    %% Start master server to handle messages from user or testers/hashers.                                           
+    master(State#serv_state{tpids=TesterPids, hpids=HasherPids}).
 
-%% The master thread which will spam testers/hashers when an addition, query
+
+%% The master thread which will spam testers/hashers when an addition, test
 %% or shutdown message comes in.
-master(#serv_state{tpids=TesterPids,hpids=HasherPids} = State) ->
+master(#serv_state{tpids=Tpids,hpids=Hpids,latest_error=null} = State) ->
     receive
         shutdown -> 
-            flash(TesterPids, shutdown);
+            flash(Tpids, shutdown),
+            flash(Hpids, shutdown);
+        
         {add, Elem, RetPid} -> 
-            flash(HasherPids, {add, Elem}),
-            RetPid ! ok,
+            flash(Hpids, {add, Elem}),
+            safe_send( RetPid, ok ),
             master(State);
+        
         {test, Elem, RetPid} -> 
             Tester = spawn(bf_server, tester, [State,RetPid,0]),
-            flash(HasherPids, {test, Elem, Tester})
+            flash(Hpids, {test, Elem, Tester}),
+            master(State);
+        
+        {'EXIT', From, Reason} -> % Crash and buurn! 
+            %TODO: should turn bf_server into OTP, it would be easier to provide 
+            %  redundancy in the bitvector.
+            flash(Tpids, shutdown),
+            flash(Hpids, shutdown),
+            master(State#serv_state{latest_error={From,Reason}});
+        
+        _ -> % Should never happen, but added so we can ignore.
+            master(State)
     end.
 
 %% Spawned from the master, it collates the results from the tester threads.
 tester(#serv_state{t=T},Ret,T) -> 
-    Ret ! true;
+    safe_send(Ret, true);
 tester(State, Ret, Acc) ->
     receive 
-        {ret, true} -> tester(State, Ret, Acc+1);
-        {ret, false} -> Ret ! false;
+        {ret, true}  -> tester(State, Ret, Acc+1);
+        {ret, false} -> safe_send(Ret, false);
         _ -> tester(State,Ret,Acc)
     end.
     
-hasher(Elem, N, H1, H2, Start, End, Pids) ->
-    %TODO: finish updating hasher.
-    lists:foreach(fun(I) ->
-        H = bfutil:mod( (H1(Elem) + I*H2(Elem) + I*I), N ),
-        flash(Pids, {test,H/8,bfutils:mod(H,8)})
-    end, lists:seq(Start, End)).    
+hasher(Hashs, H1, H2, N, Testers) ->
+    receive
+        {test, Elem, Serv} ->
+            lists:foreach(fun(I) ->
+                H = (H1(Elem) + I*H2(Elem) + I*I) rem N,
+                flash(Testers, {test, bfutil:bm(H), Serv})
+            end, Hashs),
+            hasher(Hashs,H1,H2,N,Testers);
+        shutdown -> ok;
+        _ -> hasher(Hashs,H1,H2,N,Testers)
+    end.
 
 %% Thread function that handles checking a sub-section of the bit-vector.
 handler(#partialBF{b=B} = State) ->
     receive
         shutdown -> ok;
-        {test, Block, Bit, Ret} ->
-            case check(B, Block, Bit) of
-                true -> Ret ! {ret, true};
-                false -> Ret ! {ret, false};
+        
+        {test, {Block, Mask}, Ret} ->
+            case check(B, Block, Mask) of
+                true  -> safe_send(Ret, {ret, true});
+                false -> safe_send(Ret, {ret, false});
                 _ -> ok
             end,
             handler(State);
+        
         {add, Block, Bit} ->
-            State#partialBF{b=update(B, Block, Bit)};
-        _ -> handler(State)
+            handler(State#partialBF{b=update(B, Block, Bit)});
+
+        _ -> 
+            handler(State)
     end.
 
 %% ====================================================================
@@ -175,11 +209,11 @@ handler(#partialBF{b=B} = State) ->
 %% ====================================================================
 
 %% Performs linear search of bitvector chunks to see if block/bit are 1.
-check([{Block,Bits}|_], Block, Bit) ->
-    (Bits bor Bit) == Bits;
+check([{Block,Byte}|_], Block, Mask) ->
+    (Byte bor Mask) == Byte;
 check([{_,_}|R], Block, Bit) -> 
     check(R, Block, Bit);
-check([], Block, Bit) -> none.
+check([], _, _) -> none.
 
 %% Performs linear search of bitvector for block/bit and masks it to a 1.
 update([{Block,Bits}|R], Block, Bit) ->
@@ -189,16 +223,32 @@ update([{_,_}=H|R], Block, Bit) ->
 update([],_,_) -> [].
 
 %% Flashes a list of process-ids with a given message
-flash( [Pid|Rest], Msg ) -> 
-    try Pid ! Msg catch _:_ -> ok end, 
-    flash(Rest, Msg);
+flash( [Pid|Rest], Msg ) ->  
+    flash(Rest, safe_send(Pid, Msg));
 flash( [], _ ) -> ok.
 
 %% Break up a bit-vector over N number of threads.
 splitbv(N, L) -> splitbv(0,N,L,[]).
-splitbv(A,N,[],P) -> P;
+splitbv(_,_,[],P) -> P;
 splitbv(A,N,[H|T],P) ->
     case lists:keyfind(A,2,P) of
         {A,L} -> splitbv( (A+1) rem N, N, T, lists:keyreplace(A, 2, P, [H,L]));
         false -> splitbv( (A+1) rem N, N, T, [{A,[H]}|P] )
     end.
+
+%% Create all the partitions of the bit-vector given the number of threads 
+%% and the number of bytes. 
+create_byte_partitions(T, B) ->
+    splitbv( T, 
+      lists:zip( lists:seq(0, B-1), 
+                 lists:duplicate(B,<<0>>) 
+            )).
+
+%% Create all the partitions of the hash space given the number of threads
+%% and the number of hashes.
+create_hash_partitions(T, K) ->
+    splitbv( T, lists:seq(1,K) ).
+
+%% Send a message to a given Process Id. If the process is no longer running,
+%% Then just ignore it.
+safe_send(Pid,Msg) -> try Pid ! Msg catch _:_ -> Msg end.

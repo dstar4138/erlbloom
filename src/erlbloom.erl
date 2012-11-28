@@ -52,8 +52,8 @@ create( M, K ) -> create(M, K, [{h1, fun erlbloom:fasthasha/1},
 %%
 %% Func: create/3
 %% Params: M - The number of bits in the bit-vector.
-%%           K - The number of hashes to use on each element. 
-%%           Opts - A list of options for adjusting bloom filter
+%%         K - The number of hashes to use on each element. 
+%%         Opts - A list of options for adjusting bloom filter
 %% Returns: {ok,  BloomFilter} | {error, Reason}
 %% --------------------------------------------------------------------
 -spec create( integer(), integer(), bf_opts() ) -> {ok, bloomfilter()} | 
@@ -71,7 +71,7 @@ create( M, K, Opts ) when is_integer(M) andalso is_integer(K) andalso M > K ->
 %%
 %% Func: add/2
 %% Params: BF -  The bloom-filter returned from a `create' function.
-%%           Elem - An element that is hashable by the hash functions given to
+%%         Elem - An element that is hashable by the hash functions given to
 %%                erlbloom. If you aren't sure, then pass in a binary.
 %% Returns: {ok,  BloomFilter} | {error, Reason}
 %% --------------------------------------------------------------------
@@ -96,7 +96,7 @@ add(PBF, Elem) when is_record(PBF, pbf) ->
 %%
 %% Func: test/2
 %% Params: BF - The bloom filter to check in.
-%%           Elem - The element that we are checking for. 
+%%         Elem - The element that we are checking for. 
 %% Returns: true | false | {error, Reason}
 %% --------------------------------------------------------------------
 -spec test( bloomfilter, any() ) -> boolean() | {error, any() }.
