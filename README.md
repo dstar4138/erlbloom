@@ -10,8 +10,8 @@ really tested it fully. If you find bugs, I'll be happy to merge fixes!
 
 #### Simple usage: ####
 
-	> BF = erlbloom:create(10000,12). % New bloom filter with 10000 bits and 12 hashes
-	> BFa = erlbloom:add(BF, <<"hello">>). % Add an element
+	> {ok, BF} = erlbloom:create(10000,12). % New bloom filter with 10000 bits and 12 hashes
+	> {ok, BFa} = erlbloom:add(BF, <<"hello">>). % Add an element
 	> erlbloom:test(BFa, <<"hello">>). % Test if element is present
 	true
 	
@@ -23,7 +23,7 @@ binary.
 
 	> Fun1 = ... % A hash function
 	> Fun2 = ... % Another hash function
-	> BF = erlbloom:create(M,K,[{h1,Fun1},{h2,Fun2}]).
+	> {ok, BF} = erlbloom:create(M,K,[{h1,Fun1},{h2,Fun2}]).
 	
 Note that erlbloom takes advantage of crypto trick and just requires two hash 
 function to implement K hashes.
@@ -36,7 +36,7 @@ You can then ask the network of testers if an element exists and each tester
 will check a subrange of the bloom filter. Adding an element just percolates 
 the changes out to all testers. Think Map-Reduce.
 
-	> PBF = erlbloom:create(M,K,[{threads,8}]). 
+	> {ok, PBF} = erlbloom:create(M,K,[{threads,8}]). 
 	> erlbloom:add(PBF, <<"hello">>).
 	> erlbloom:test(PBF, <<"hello">>).
 	true
