@@ -20,7 +20,8 @@
 -export([create/1, create/2, create/3, add/2, test/2, stop/1]).
 -export([fasthasha/1, fasthashb/1]).
 
--type bf_opt()  :: {h1, fun()} | {h2, fun()} | {threads, integer()}.
+-type bf_opt()  :: {h1, fun()} | {h2, fun()} | 
+                   {threads, integer()} | {phash, boolean()}.
 -type bf_opts() :: [ bf_opt() ].
 
 %% --------------------------------------------------------------------
@@ -59,11 +60,11 @@ create( M, K ) -> create(M, K, [{h1, fun erlbloom:fasthasha/1},
 -spec create( integer(), integer(), bf_opts() ) -> {ok, bloomfilter()} | 
                                                    {error, any()}.
 create( M, K, Opts ) when is_integer(M) andalso is_integer(K) andalso M > K ->
-    {H1, H2,  T} = parse_opts( Opts ),
+    {H1, H2,  T, PH} = parse_opts( Opts ),
     B = bfutil:ceil(M/8) * 8, % Must be multiple of 8 (bit syntax)
     case T of
         0 -> {ok, #bf{m = <<0:B>>, n=B, k = K, h1 = H1, h2 = H2}};
-        _ -> bf_server:start(B, K, T, H1, H2)
+        _ -> bf_server:start(B, K, T, PH, H1, H2)
     end.
     
 %% --------------------------------------------------------------------
@@ -158,12 +159,13 @@ fasthashb(W) -> erlang:phash2({W,"salt"}).
 %% ====================================================================
 
 parse_opts( Opts ) ->
-    Def = {fun erlbloom:fasthasha/1, fun erlbloom:fasthashb/1, 0},
+    Def = {fun erlbloom:fasthasha/1, fun erlbloom:fasthashb/1, 0, false},
     lists:foldl(
-      fun({Type,Opt}, {A,B,C}) ->
+      fun({Type,Opt}, {A,B,C,D}) ->
         case Type of
-            h1 -> {Opt,B,C};
-            h2 -> {A,Opt,C};
-            threads -> {A,B,Opt}
+            h1 -> {Opt,B,C,D};
+            h2 -> {A,Opt,C,D};
+            threads -> {A,B,Opt,D};
+            phash -> {A,B,C,Opt}
         end
       end, Def, Opts).

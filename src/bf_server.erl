@@ -19,7 +19,7 @@
 -include("bf.hrl").
 
 % Public exports
--export([start/5, stop/1, add/2, test/2]).
+-export([start/6, stop/1, add/2, test/2]).
 
 % Private exports
 -export([master/1, tester/3, hasher/5, handler/1]).
@@ -34,6 +34,7 @@
     b=0 :: non_neg_integer(),  % The size of the bit vector (number of bits).
     k=0 :: non_neg_integer(),  % The number of hash functions used.
     t=0 :: non_neg_integer(),  % Number of threads for hashing and testing.
+    ph=false :: boolean(),     % Whether or not to parallize hashing.
     h1=null :: null | fun(),   % Hash functions
     h2=null :: null | fun(),  
     tpids=[] :: [ pid() ],     % Tester Pid()
@@ -48,14 +49,15 @@
 %% Params: B - Size of bit vector.
 %%         K - Number of hashes to use on each element.
 %%         T - The number of threads to spawn for testing purposes.
+%%         PH - Parallel Hashing (best if )
 %%         H1 - First hash function.
 %%         H2 - Second hash function.
 %% Returns: {ok,  BloomFilter} | {error, Reason}
 %% --------------------------------------------------------------------
--spec start(integer(), integer(), integer(), fun(), fun()) -> {ok, [pid()]} |
-                                                              {error, any()}.
-start(B, K, T, H1, H2) ->
-    MasterPid = start_master( #serv_state{b=B,k=K,t=T,h1=H1,h2=H2} ),
+-spec start(integer(), integer(), integer(), boolean(), fun(), fun()) -> 
+            {ok, [pid()]} | {error, any()}.
+start(B, K, T, PH, H1, H2) ->
+    MasterPid = start_master( #serv_state{b=B,k=K,t=T,ph=PH,h1=H1,h2=H2} ),
     {ok, #pbf{master=MasterPid} }.
 
 %% --------------------------------------------------------------------
@@ -112,7 +114,7 @@ test(Elem, PBF) ->
 %% ====================================================================
 
 %% Starts the master server after starting the hashing and testing threads.
-start_master(#serv_state{b=B,k=K,t=T,h1=H1,h2=H2}=State) ->
+start_master(#serv_state{b=B,k=K,t=T,ph=PH,h1=H1,h2=H2}=State) ->
     
     %% If a hasher or tester goes down, master needs to know.
     process_flag(trap_exit, true),
@@ -127,7 +129,7 @@ start_master(#serv_state{b=B,k=K,t=T,h1=H1,h2=H2}=State) ->
     %% will run ten separate hashes.)
     HasherPids = lists:foldl(fun(Hashes,PidList)->
             [spawn_link(bf_server, hasher, [Hashes,H1,H2,B,TesterPids])|PidList]
-                             end,[], create_hash_partitions(T, K)),
+                             end,[], create_hash_partitions(T, K, PH)),
                                                
     %% Start master server to handle messages from user or testers/hashers.                                           
     master(State#serv_state{tpids=TesterPids, hpids=HasherPids}).
@@ -171,7 +173,8 @@ tester(State, Ret, Acc) ->
         {ret, false} -> safe_send(Ret, false);
         _ -> tester(State,Ret,Acc)
     end.
-    
+
+%% The thread that hashes an element and tells the testers the hashed result.
 hasher(Hashs, H1, H2, N, Testers) ->
     receive
         {test, Elem, Serv} ->
@@ -246,8 +249,11 @@ create_byte_partitions(T, B) ->
 
 %% Create all the partitions of the hash space given the number of threads
 %% and the number of hashes.
-create_hash_partitions(T, K) ->
-    splitbv( T, lists:seq(1,K) ).
+create_hash_partitions(T, K, PH) ->
+    L = lists:seq(1,K),
+    if PH -> splitbv( T, L );
+       true -> L
+    end.
 
 %% Send a message to a given Process Id. If the process is no longer running,
 %% Then just ignore it.
