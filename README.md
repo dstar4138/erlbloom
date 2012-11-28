@@ -34,7 +34,7 @@ erlbloom has a fairly simplistic concurrency method. Essentially just tell it
 how many "threads" you want it to have and it will spawn that many "testers". 
 You can then ask the network of testers if an element exists and each tester 
 will check a subrange of the bloom filter. Adding an element just percolates 
-the changes out to all testers.
+the changes out to all testers. Think Map-Reduce.
 
 	> PBF = erlbloom:create(M,K,[{threads,8}]). 
 	> erlbloom:add(PBF, <<"hello">>).
