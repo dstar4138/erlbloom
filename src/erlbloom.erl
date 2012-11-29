@@ -100,7 +100,7 @@ add(PBF, Elem) when is_record(PBF, pbf) ->
 %%         Elem - The element that we are checking for. 
 %% Returns: true | false | {error, Reason}
 %% --------------------------------------------------------------------
--spec test( bloomfilter, any() ) -> boolean() | {error, any() }.
+-spec test( bloomfilter(), any() ) -> boolean() | {error, any() }.
 test(BF,Elem) when is_record(BF, bf) ->
     try
         OldM = BF#bf.m,
